@@ -680,7 +680,11 @@ function analyzeAndRender(){
   setDot(dotDist, dist.ok ? 'ok' : 'warn');
 
   resText.textContent = res;
-  setDot(dotRes, res==='OK' ? 'ok' : (res==='NG' ? 'ng' : 'warn'));
+  setDot(dotRes,
+  (res==='OK' && dist.ok) ? 'ok'
+  : (res==='NG' || !dist.ok) ? 'ng'
+  : 'warn'
+);
 
   // 理由
   const lines = [];
@@ -740,4 +744,5 @@ btnCalClear.onclick = ()=>{
 // 初期：ボタン無効はしない（現場で即触れる方が楽）
 </script>
 </body>
+
 </html>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>塗装2号機｜乾燥後 粗さ（grain）判定 Ver.3</title>
+  <title>塗装2号機｜乾燥後 粗さ（grain）判定 Ver.3 + Gate</title>
   <style>
     :root{
       --bg:#ffffff; --fg:#111; --muted:#666; --card:#f6f7f9; --line:#e6e7ea;
@@ -48,7 +48,7 @@
     .kpi > div{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px}
     .kpi .lab{color:var(--muted);font-size:12px}
     .kpi .val{font-size:22px;font-weight:800;margin-top:2px}
-    .note{color:var(--muted);font-size:12px;line-height:1.5;margin-top:10px}
+    .note{color:var(--muted);font-size:12px;line-height:1.5;margin-top:10px;white-space:pre-line}
     canvas{max-width:100%;border-radius:14px;border:1px solid var(--line);background:#000}
     .roiWrap{position:relative}
     .roiOverlay{
@@ -65,7 +65,6 @@
     .tbl td{padding:10px;background:#fff;border:1px solid var(--line)}
     .tbl td:first-child{border-radius:12px 0 0 12px}
     .tbl td:last-child{border-radius:0 12px 12px 0}
-    .right{float:right}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
     .badge{
       display:inline-block;padding:6px 10px;border-radius:999px;font-weight:800;border:1px solid var(--line);background:#fff;
@@ -77,9 +76,10 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>塗装2号機｜乾燥後 粗さ（grain）判定 <span class="mono">Ver.3</span></h1>
+  <h1>塗装2号機｜乾燥後 粗さ（grain）判定 <span class="mono">Ver.3 + Gate</span></h1>
   <div class="sub">
     使い方：①画像を入れる → ②必要ならROIを指で選ぶ → ③結果を見る（距離不足でも判定は止めない）<br/>
+    追加：撮影品質ゲート（反射/暗さ/影/ボケが強いと <b>再撮影</b> を表示）<br/>
     目的：現場で <b>約1m</b> から撮影して <b>OK / NG</b> を返す。※精度は「撮影条件」と「色（塗料）」に強く依存。
   </div>
 
@@ -133,7 +133,7 @@
 
       <div class="note">
         ROIは「指でドラッグして四角」。<b>小さすぎるROIは自動で無効</b>（1m運用はROIが小さいと破綻しやすい）<br/>
-        反射（白飛び）や強い影はノイズ源。<b>“反射が多い”ときは警告</b>を出す。
+        反射（白飛び）や強い影はノイズ源。ゲートで強めに弾く。
       </div>
     </div>
 
@@ -172,7 +172,7 @@
       </div>
       <div class="note">
         ※「学習」は端末内（localStorage）だけ。サーバには送らない。<br/>
-        現場の“許容凸”は、<b>点状ノイズを強く罰しない</b>粗さ指標で吸収する設計。
+        ゲートで「再撮影」の場合は、学習ボタンを無効にする（汚染防止）。
       </div>
 
       <div class="hr"></div>
@@ -181,7 +181,7 @@
         <b>目安（撮影）</b><br/>
         ・基本：面に対してできるだけ正面、水平。<br/>
         ・屋内：照明を一定に（影が大きいとNG寄りに揺れる）。<br/>
-        ・屋外：直射とギラつきは避ける（反射警告が出たら角度を数度だけ逃がす）。<br/>
+        ・屋外：直射とギラつきは避ける（再撮影が出たら角度を数度だけ逃がす）。<br/>
         ・距離：将来は1m運用、今はまず「同条件でブレない」ことを優先。
       </div>
     </div>
@@ -214,14 +214,6 @@
 </div>
 
 <script>
-/**
- * Ver.3 方針
- * - 1m運用を見据え：ROIが小さすぎるとブレる → 自動無効
- * - 反射（白飛び）・強い影を検出して信頼度に反映
- * - 色（塗料）でスコア帯が変わる → 色プリセット + 端末内学習で補正
- * - “現場OKの凸”は、点状ノイズを強く罰しない粗さ指標で許容する
- */
-
 // ===== DOM =====
 const view = document.getElementById('view');
 const ctx = view.getContext('2d', { willReadFrequently: true });
@@ -239,7 +231,6 @@ const colorSel = document.getElementById('colorSel');
 const btnFullROI = document.getElementById('btnFullROI');
 const btnUseROI  = document.getElementById('btnUseROI');
 
-const overlay = document.getElementById('overlay');
 const roiRectEl = document.getElementById('roiRect');
 
 const grainVal = document.getElementById('grainVal');
@@ -274,9 +265,7 @@ let drag = { on:false, sx:0, sy:0, ex:0, ey:0 };
 let lastMetrics = null;
 
 // ===== しきい値プリセット（初期値）=====
-// ※値は「今までのデータ感」からの初期仮置き。現場写真で必ず調整する前提。
 const BASE_THRESH = {
-  // key: `${color}_${env}`
   gray_indoor : { ok: 38, ng: 48 },
   gray_outdoor: { ok: 40, ng: 52 },
   white_indoor: { ok: 42, ng: 55 },
@@ -294,53 +283,40 @@ const BASE_THRESH = {
 // ===== 端末内学習（軽量）=====
 const LS_KEY = 'paint_inspection_v3_calib';
 function loadCalib(){
-  try{
-    return JSON.parse(localStorage.getItem(LS_KEY) || '{}');
-  }catch(e){ return {}; }
+  try{ return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); }
+  catch(e){ return {}; }
 }
-function saveCalib(obj){
-  localStorage.setItem(LS_KEY, JSON.stringify(obj));
-}
-function calibKey(){
-  return `${colorSel.value}_${envSel.value}`;
-}
+function saveCalib(obj){ localStorage.setItem(LS_KEY, JSON.stringify(obj)); }
+function calibKey(){ return `${colorSel.value}_${envSel.value}`; }
 
-// 学習は「平均値を少し寄せる」だけ（暴走防止）
 function applyCalib(base, calib){
   const out = { ...base };
   if(!calib) return out;
 
-  // calib: { goodMean, badMean, nGood, nBad }
-  // base.ok / base.ng を good/bad に寄せるが、寄せ幅は最大±6に制限
   const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
 
   if(Number.isFinite(calib.goodMean) && calib.nGood>=2){
-    const targetOk = calib.goodMean + 3; // 良品平均 + 少しマージン
+    const targetOk = calib.goodMean + 3;
     const delta = clamp(targetOk - out.ok, -6, 6);
     out.ok = Math.round(out.ok + delta);
   }
   if(Number.isFinite(calib.badMean) && calib.nBad>=2){
-    const targetNg = calib.badMean - 3; // 不良平均 - 少しマージン
+    const targetNg = calib.badMean - 3;
     const delta = clamp(targetNg - out.ng, -6, 6);
     out.ng = Math.round(out.ng + delta);
   }
-  // ok < ng を保証（最低差 6）
-  if(out.ng - out.ok < 6){
-    out.ng = out.ok + 6;
-  }
+  if(out.ng - out.ok < 6){ out.ng = out.ok + 6; }
   return out;
 }
 
 // ===== UI =====
-function setDot(dotEl, kind){
-  dotEl.className = 'dot ' + kind;
-}
+function setDot(dotEl, kind){ dotEl.className = 'dot ' + kind; }
 function fmt1(x){ return (Math.round(x*10)/10).toFixed(1); }
 
 function updateThreshTable(){
   const gi = applyCalib(BASE_THRESH.gray_indoor,  loadCalib()['gray_indoor']);
   const go = applyCalib(BASE_THRESH.gray_outdoor, loadCalib()['gray_outdoor']);
-  const ot = applyCalib(BASE_THRESH.other_indoor, loadCalib()['other_indoor']); // 代表
+  const ot = applyCalib(BASE_THRESH.other_indoor, loadCalib()['other_indoor']);
   t_gi_ok.textContent = gi.ok; t_gi_ng.textContent = gi.ng;
   t_go_ok.textContent = go.ok; t_go_ng.textContent = go.ng;
   t_ot_ok.textContent = ot.ok; t_ot_ng.textContent = ot.ng;
@@ -356,14 +332,12 @@ function getThreshold(){
 
 // ===== 画像読み込み =====
 function fitCanvasToImage(image){
-  // 表示用キャンバス：最大幅 960 くらいに収める
   const maxW = 960;
   const scale = Math.min(1, maxW / image.naturalWidth);
   view.width  = Math.round(image.naturalWidth * scale);
   view.height = Math.round(image.naturalHeight * scale);
   ctx.drawImage(image, 0,0, view.width, view.height);
 
-  // ROI初期：全体
   roi = { x:0, y:0, w:view.width, h:view.height, active:false };
   drawROI();
   analyzeAndRender();
@@ -395,6 +369,8 @@ btnReset.onclick = ()=>{
   whyEl.textContent='画像を入れてください。';
   confText.textContent='—'; distText.textContent='—'; resText.textContent='—';
   setDot(dotConf,'ok'); setDot(dotDist,'ok'); setDot(dotRes,'ok');
+  btnCalGood.disabled = false;
+  btnCalBad.disabled  = false;
 };
 
 envSel.onchange = ()=> analyzeAndRender();
@@ -434,7 +410,6 @@ function setROIFromDrag(){
   const w = x2 - x1;
   const h = y2 - y1;
 
-  // 小さすぎるROIは無効（1m運用でブレる）
   const minSide = Math.min(view.width, view.height);
   const minW = Math.max(180, Math.round(minSide * 0.18));
   const minH = Math.max(140, Math.round(minSide * 0.14));
@@ -463,12 +438,8 @@ view.addEventListener('pointermove', (ev)=>{
   drag.ex = p.x; drag.ey = p.y;
   setROIFromDrag();
 });
-view.addEventListener('pointerup', ()=>{
-  drag.on = false;
-});
-view.addEventListener('pointercancel', ()=>{
-  drag.on = false;
-});
+view.addEventListener('pointerup', ()=>{ drag.on = false; });
+view.addEventListener('pointercancel', ()=>{ drag.on = false; });
 
 btnFullROI.onclick = ()=>{
   if(!imgLoaded) return;
@@ -484,18 +455,14 @@ btnUseROI.onclick = ()=>{
 window.addEventListener('resize', drawROI);
 
 // ===== 解析コア =====
-
-// 1) ROIを取り出して低コストに縮小（解析を安定させる）
 function getROIImageData(){
   const x = Math.max(0, Math.floor(roi.active ? roi.x : 0));
   const y = Math.max(0, Math.floor(roi.active ? roi.y : 0));
   const w = Math.min(view.width - x, Math.floor(roi.active ? roi.w : view.width));
   const h = Math.min(view.height - y, Math.floor(roi.active ? roi.h : view.height));
 
-  // 占有率（画面に対するROI割合）
   const cov = (w*h) / (view.width*view.height);
 
-  // 解析サイズ：最大 420px に収める（端末軽量）
   const maxSide = 420;
   const scale = Math.min(1, maxSide / Math.max(w, h));
   const tw = Math.max(60, Math.floor(w * scale));
@@ -505,35 +472,32 @@ function getROIImageData(){
   tmp.width = tw; tmp.height = th;
   const tctx = tmp.getContext('2d', { willReadFrequently:true });
 
-  // 元画像（view）からROIを縮小描画
   tctx.drawImage(view, x, y, w, h, 0, 0, tw, th);
   const id = tctx.getImageData(0,0,tw,th);
   return { id, cov, tw, th };
 }
 
-// 2) 反射/影のチェック（信頼度）
 function qualityChecks(id){
   const d = id.data;
-  let n = id.width*id.height;
+  const n = id.width*id.height;
 
   let bright = 0, dark = 0;
-  // 輝度ヒストざっくり
   for(let i=0;i<d.length;i+=4){
     const r=d[i], g=d[i+1], b=d[i+2];
     const y = 0.2126*r + 0.7152*g + 0.0722*b;
     if(y > 245) bright++;
     if(y < 20)  dark++;
   }
-  const brightRate = bright / n; // 白飛び
-  const darkRate   = dark / n;   // 黒つぶれ
+  const brightRate = bright / n;
+  const darkRate   = dark / n;
 
-  // 反射警告：白飛びが多い
-  const glare = brightRate > 0.012; // 1.2% 以上で警告
-  const shadow = darkRate > 0.020;  // 2% 以上で警告
+  const glare = brightRate > 0.012;
+  const shadow = darkRate > 0.020;
 
   return { glare, shadow, brightRate, darkRate };
 }
-// 2.5) ピンボケ（簡易）チェック：ラプラシアン分散
+
+// ピンボケ（簡易）チェック：ラプラシアン分散
 function blurCheck(gray, w, h){
   let sum = 0, sum2 = 0, n = 0;
   for(let y=1;y<h-1;y++){
@@ -547,12 +511,12 @@ function blurCheck(gray, w, h){
   }
   const mean = sum/n;
   const varr = sum2/n - mean*mean;
-  return varr;
+  return varr; // 大きいほどシャープ
 }
 
-// 2.6) 撮影品質ゲート
+// 撮影品質ゲート（暗い/白飛び/影/ボケ）
 function qualityGate(id){
-  const gate = qualityGate(id);
+  const q = qualityChecks(id);
 
   const w=id.width, h=id.height, d=id.data;
   const gray = new Float32Array(w*h);
@@ -563,7 +527,6 @@ function qualityGate(id){
       gray[y*w+x] = 0.2126*r + 0.7152*g + 0.0722*b;
     }
   }
-
   const blurVar = blurCheck(gray, w, h);
 
   const tooDark   = q.darkRate   > 0.055;
@@ -572,17 +535,17 @@ function qualityGate(id){
   const tooBlur   = blurVar < 120;
 
   const reasons = [];
-  if(tooDark)   reasons.push("暗い");
-  if(tooGlare)  reasons.push("反射強い");
-  if(tooShadow) reasons.push("影が強い");
-  if(tooBlur)   reasons.push("ピンボケ気味");
+  if(tooDark)   reasons.push(`暗い（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`);
+  if(tooGlare)  reasons.push(`反射強い（白飛び ${(q.brightRate*100).toFixed(1)}%）`);
+  if(tooShadow) reasons.push(`影が強い（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`);
+  if(tooBlur)   reasons.push(`ピンボケ気味（シャープ指数 ${Math.round(blurVar)})`);
 
   const fail = (reasons.length >= 2) || (tooGlare);
 
-  return { fail, reasons, ...q };
+  return { fail, reasons, blurVar, ...q };
 }
-  
-// 3) ざっくり照明補正：局所平均との差分（陰影を弱める）
+
+// 照明補正：局所平均との差分
 function illuminationNormalizeGray(id){
   const w=id.width, h=id.height, d=id.data;
   const g = new Float32Array(w*h);
@@ -595,10 +558,8 @@ function illuminationNormalizeGray(id){
     }
   }
 
-  // box blur（簡易：横→縦）
-  const rad = 9; // 反射より影を抑える
+  const rad = 9;
   const tmp = new Float32Array(w*h);
-  // horizontal
   for(let y=0;y<h;y++){
     let sum=0;
     for(let x=0;x<w;x++){
@@ -616,7 +577,6 @@ function illuminationNormalizeGray(id){
     }
   }
   const blur = new Float32Array(w*h);
-  // vertical
   for(let x=0;x<w;x++){
     let sum=0;
     for(let y=0;y<h;y++){
@@ -634,7 +594,6 @@ function illuminationNormalizeGray(id){
     }
   }
 
-  // normalized = g - blur + 128（オフセット）
   const out = new Float32Array(w*h);
   for(let i=0;i<w*h;i++){
     out[i] = (g[i] - blur[i]) + 128;
@@ -642,9 +601,7 @@ function illuminationNormalizeGray(id){
   return out;
 }
 
-// 4) grainスコア：高周波エネルギー（点状凸に強く反応しすぎない）
 function computeGrainScore(normGray, w, h){
-  // Sobel-ish（簡易）で勾配強度を取る → 平均+分散
   let sum=0, sum2=0, n=0;
 
   for(let y=1;y<h-1;y++){
@@ -653,10 +610,7 @@ function computeGrainScore(normGray, w, h){
       const gx = (normGray[i+1]-normGray[i-1]) * 0.5;
       const gy = (normGray[i+w]-normGray[i-w]) * 0.5;
       const mag = Math.sqrt(gx*gx + gy*gy);
-
-      // 点ノイズ（1ピクセル凸）だけで暴れないように軽くクリップ
       const m = Math.min(mag, 40);
-
       sum += m;
       sum2 += m*m;
       n++;
@@ -664,24 +618,17 @@ function computeGrainScore(normGray, w, h){
   }
   const mean = sum/n;
   const varr = sum2/n - mean*mean;
-
-  // grain = mean と var の合成（現場OKの小凸は平均寄りで吸収）
   const grain = mean*1.6 + Math.sqrt(Math.max(0,varr))*0.9;
-
   return grain;
 }
 
-// 5) “距離OK”判定（厳密ではなく目安）
-//   ROI縮小後の解像感が低いと「距離NG(詳細不可)」にするが、判定は止めない
 function distanceHeuristic(tw, th, cov){
-  // 1m運用ではROIが十分大きい必要がある：covと解析サイズで評価
-  const minPix = 180*140; // これ未満は厳しい
+  const minPix = 180*140;
   const pix = tw*th;
   const ok = (pix >= minPix) && (cov >= 0.18);
   return { ok, pix };
 }
 
-// ===== 判定 =====
 function judge(grain, th){
   if(grain <= th.ok) return 'OK';
   if(grain >= th.ng) return 'NG';
@@ -691,36 +638,46 @@ function judge(grain, th){
 function analyzeAndRender(){
   if(!imgLoaded) return;
 
-  // 画面再描画（常に最新）
   ctx.drawImage(img, 0,0, view.width, view.height);
 
-  const { id, cov, tw, th:thh } = getROIImageData();
-  const q = qualityChecks(id);
+  const { id, cov, tw, th } = getROIImageData();
+  const gate = qualityGate(id);
 
   const norm = illuminationNormalizeGray(id);
   const gscore = computeGrainScore(norm, id.width, id.height);
 
   const thres = getThreshold();
   const res = judge(gscore, thres);
-　let finalRes = res;
-　if(gate.fail){
- 　 finalRes = '再撮影';
-　}
-  const dist = distanceHeuristic(tw, thh, cov);
+
+  let finalRes = res;
+  if(gate.fail){
+    finalRes = '再撮影';
+  }
+
+  const dist = distanceHeuristic(tw, th, cov);
 
   // 信頼度（反射・影・距離）
   let conf = '高';
   let confDot = 'ok';
-  let confReasons = [];
-  if(gate.glare){ conf = '中'; confDot='warn'; confReasons.push(`反射多め（白飛び ${(q.brightRate*100).toFixed(1)}%）`); }
-  if(gate.shadow){ conf = (conf==='高'?'中':conf); confDot = (confDot==='ok'?'warn':confDot); confReasons.push(`影多め（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`); }
+  const confReasons = [];
+
+  if(gate.glare){
+    conf = '中'; confDot = 'warn';
+    confReasons.push(`反射多め（白飛び ${(gate.brightRate*100).toFixed(1)}%）`);
+  }
+  if(gate.shadow){
+    conf = (conf==='高' ? '中' : conf);
+    confDot = (confDot==='ok' ? 'warn' : confDot);
+    confReasons.push(`影多め（黒つぶれ ${(gate.darkRate*100).toFixed(1)}%）`);
+  }
   if(!dist.ok){
-    conf = '中';
-    confDot='warn';
+    conf = '中'; confDot = 'warn';
     confReasons.push('距離/ROIが小さめ（詳細は不安定）');
   }
+  if(gate.fail){
+    conf = '低'; confDot = 'warn';
+  }
 
-  // UI更新
   grainVal.textContent = fmt1(gscore);
   covVal.textContent = (cov*100).toFixed(1) + '%';
 
@@ -731,40 +688,39 @@ function analyzeAndRender(){
   setDot(dotDist, dist.ok ? 'ok' : 'warn');
 
   resText.textContent = finalRes;
-  setDot(dotRes,
-  (finalRes==='OK' && dist.ok) ? 'ok'
-  : (finalRes==='NG' || !dist.ok) ? 'ng'
-  : 'warn'
-);
+  setDot(dotRes, finalRes==='OK' ? 'ok' : (finalRes==='NG' ? 'ng' : 'warn'));
 
-  // 理由
   const lines = [];
-  lines.push(`判定：${res}（しきい値 OK≦${thres.ok} / NG≧${thres.ng}）`);
-  if(roi.active){
-    lines.push('ROI：指定あり（塗装面のみを切ると安定）');
-  }else{
-    lines.push('ROI：全体（エッジや影が入るとブレる）');
-  }
+  lines.push(`判定：${finalRes}（しきい値 OK≦${thres.ok} / NG≧${thres.ng}）`);
+  lines.push(roi.active ? 'ROI：指定あり（塗装面のみを切ると安定）' : 'ROI：全体（エッジや影が入るとブレる）');
+
   if(confReasons.length){
     lines.push('注意：' + confReasons.join(' / '));
   }else{
     lines.push('注意：なし');
   }
+
+  if(gate.fail){
+    lines.push('再撮影理由：' + gate.reasons.join(' / '));
+  }
+
   lines.push(`環境：${envSel.value==='indoor'?'屋内':'屋外'} / 色：${colorSel.options[colorSel.selectedIndex].text}`);
   whyEl.textContent = lines.join('\n');
 
-  lastMetrics = { grain:gscore, cov, tw, th:thh, thres, res: finalRes };
+  lastMetrics = { grain:gscore, cov, tw, th, thres, res: finalRes };
 
-const canLearn = !gate.fail;
-btnCalGood.disabled = !canLearn;
-btnCalBad.disabled  = !canLearn;
+  const canLearn = !gate.fail;
+  btnCalGood.disabled = !canLearn;
+  btnCalBad.disabled  = !canLearn;
 
-updateThreshTable();
+  updateThreshTable();
 }
 
 // ===== 学習ボタン =====
 function updateCalib(kind){
   if(!lastMetrics) return;
+  if(lastMetrics.res === '再撮影') return; // 念のため
+
   const key = calibKey();
   const db = loadCalib();
   const cur = db[key] || { goodMean:null, badMean:null, nGood:0, nBad:0 };
@@ -772,7 +728,6 @@ function updateCalib(kind){
   const x = lastMetrics.grain;
 
   function ema(prev, val, n){
-    // だんだん効きにくくする（暴走防止）
     const a = Math.min(0.35, 2/(n+3));
     return (prev==null) ? val : (prev*(1-a) + val*a);
   }
@@ -796,10 +751,6 @@ btnCalClear.onclick = ()=>{
   updateThreshTable();
   analyzeAndRender();
 };
-
-// 初期：ボタン無効はしない（現場で即触れる方が楽）
 </script>
 </body>
-
 </html>
-

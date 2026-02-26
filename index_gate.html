@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>塗装2号機｜乾燥後 粗さ（grain）判定 Ver.3 + Gate</title>
+  <style>
+    :root{
+      --bg:#ffffff; --fg:#111; --muted:#666; --card:#f6f7f9; --line:#e6e7ea;
+      --ok:#1f9d55; --ng:#d93025; --warn:#b06a00; --chip:#fff;
+      --shadow:0 6px 18px rgba(0,0,0,.06);
+      --r:16px;
+      --btn:#111; --btnfg:#fff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; background:var(--bg); color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans JP","Hiragino Sans","Yu Gothic",sans-serif;
+    }
+    .wrap{max-width:980px;margin:0 auto;padding:18px}
+    h1{font-size:22px;margin:0 0 6px}
+    .sub{color:var(--muted);font-size:13px;margin-bottom:14px;line-height:1.5}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px}
+    @media(min-width:900px){ .grid{grid-template-columns:1.2fr .8fr;} }
+    .card{
+      background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+      box-shadow:var(--shadow); padding:14px;
+    }
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .btn{
+      background:var(--btn); color:var(--btnfg); border:0; border-radius:12px;
+      padding:12px 14px; font-weight:700; cursor:pointer;
+    }
+    .btn.secondary{background:#fff;color:#111;border:1px solid var(--line)}
+    .btn.danger{background:#b3261e}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    input[type="file"]{display:none}
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;
+      background:var(--chip); border:1px solid var(--line); border-radius:999px;
+      padding:8px 12px; font-weight:700;
+    }
+    .dot{width:10px;height:10px;border-radius:50%}
+    .dot.ok{background:var(--ok)}
+    .dot.ng{background:var(--ng)}
+    .dot.warn{background:var(--warn)}
+    .kpi{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+    .kpi > div{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px}
+    .kpi .lab{color:var(--muted);font-size:12px}
+    .kpi .val{font-size:22px;font-weight:800;margin-top:2px}
+    .note{color:var(--muted);font-size:12px;line-height:1.5;margin-top:10px;white-space:pre-line}
+    canvas{max-width:100%;border-radius:14px;border:1px solid var(--line);background:#000}
+    .roiWrap{position:relative}
+    .roiOverlay{
+      position:absolute; inset:0; border-radius:14px;
+      pointer-events:none;
+    }
+    .roiRect{
+      position:absolute; border:2px solid #ff3b30; border-radius:10px;
+      box-shadow:0 0 0 9999px rgba(0,0,0,.18);
+    }
+    .small{font-size:12px;color:var(--muted)}
+    .hr{height:1px;background:var(--line);margin:12px 0}
+    .tbl{width:100%;border-collapse:separate;border-spacing:0 8px}
+    .tbl td{padding:10px;background:#fff;border:1px solid var(--line)}
+    .tbl td:first-child{border-radius:12px 0 0 12px}
+    .tbl td:last-child{border-radius:0 12px 12px 0}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .badge{
+      display:inline-block;padding:6px 10px;border-radius:999px;font-weight:800;border:1px solid var(--line);background:#fff;
+    }
+    .badge.ok{border-color:rgba(31,157,85,.35)}
+    .badge.ng{border-color:rgba(217,48,37,.35)}
+    .badge.warn{border-color:rgba(176,106,0,.35)}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>塗装2号機｜乾燥後 粗さ（grain）判定 <span class="mono">Ver.3 + Gate</span></h1>
+  <div class="sub">
+    使い方：①画像を入れる → ②必要ならROIを指で選ぶ → ③結果を見る（距離不足でも判定は止めない）<br/>
+    追加：撮影品質ゲート（反射/暗さ/影/ボケが強いと <b>再撮影</b> を表示）<br/>
+    目的：現場で <b>約1m</b> から撮影して <b>OK / NG</b> を返す。※精度は「撮影条件」と「色（塗料）」に強く依存。
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row">
+          <button class="btn" id="btnCam">撮影（スマホ）</button>
+          <button class="btn secondary" id="btnPick">写真を選ぶ（PC/スマホ）</button>
+          <button class="btn secondary" id="btnReset">画像リセット</button>
+          <input id="file" type="file" accept="image/*" />
+          <input id="cam" type="file" accept="image/*" capture="environment" />
+        </div>
+        <div class="row">
+          <span class="pill" title="環境の切替（目安）">
+            <span class="small">環境</span>
+            <select id="envSel" style="border:0;background:transparent;font-weight:800;outline:none">
+              <option value="indoor" selected>屋内</option>
+              <option value="outdoor">屋外</option>
+            </select>
+          </span>
+
+          <span class="pill" title="塗装色（ざっくり。色ごとに閾値を別持ち）">
+            <span class="small">色</span>
+            <select id="colorSel" style="border:0;background:transparent;font-weight:800;outline:none">
+              <option value="gray" selected>グレー系</option>
+              <option value="white">白系</option>
+              <option value="black">黒系</option>
+              <option value="red">赤系</option>
+              <option value="blue">青系</option>
+              <option value="other">その他</option>
+            </select>
+          </span>
+
+          <span class="pill" title="ROIは塗装面だけ切り取るのがコツ（エッジや影が入るとブレる）">
+            <span class="small">ROI</span>
+            <button class="btn secondary" id="btnFullROI" style="padding:8px 10px;border-radius:999px">全体</button>
+            <button class="btn secondary" id="btnUseROI" style="padding:8px 10px;border-radius:999px">このROIで判定</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="roiWrap">
+        <canvas id="view" width="960" height="720"></canvas>
+        <div class="roiOverlay" id="overlay" aria-hidden="true">
+          <div class="roiRect" id="roiRect" style="display:none"></div>
+        </div>
+      </div>
+
+      <div class="note">
+        ROIは「指でドラッグして四角」。<b>小さすぎるROIは自動で無効</b>（1m運用はROIが小さいと破綻しやすい）<br/>
+        反射（白飛び）や強い影はノイズ源。ゲートで強めに弾く。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row">
+          <span class="badge" id="badgeMura">ムラ</span>
+          <span class="badge warn" id="badgeAre">荒れ</span>
+        </div>
+        <div class="row">
+          <span class="pill"><span class="dot ok" id="dotConf"></span><span>信頼度</span><b id="confText">—</b></span>
+          <span class="pill"><span class="dot ok" id="dotDist"></span><span>距離</span><b id="distText">—</b></span>
+          <span class="pill"><span class="dot ok" id="dotRes"></span><span>結果</span><b id="resText">—</b></span>
+        </div>
+      </div>
+
+      <div class="kpi">
+        <div>
+          <div class="lab">grain（粗さスコア）</div>
+          <div class="val" id="grainVal">—</div>
+        </div>
+        <div>
+          <div class="lab">占有率（ROIの有効面積）</div>
+          <div class="val" id="covVal">—</div>
+        </div>
+      </div>
+
+      <div class="note" id="why">画像を入れてください。</div>
+
+      <div class="hr"></div>
+
+      <div class="row">
+        <button class="btn secondary" id="btnCalGood">この条件を「良品」として記憶</button>
+        <button class="btn secondary" id="btnCalBad">この条件を「不良」として記憶</button>
+        <button class="btn danger" id="btnCalClear">学習リセット</button>
+      </div>
+      <div class="note">
+        ※「学習」は端末内（localStorage）だけ。サーバには送らない。<br/>
+        ゲートで「再撮影」の場合は、学習ボタンを無効にする（汚染防止）。
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="small">
+        <b>目安（撮影）</b><br/>
+        ・基本：面に対してできるだけ正面、水平。<br/>
+        ・屋内：照明を一定に（影が大きいとNG寄りに揺れる）。<br/>
+        ・屋外：直射とギラつきは避ける（再撮影が出たら角度を数度だけ逃がす）。<br/>
+        ・距離：将来は1m運用、今はまず「同条件でブレない」ことを優先。
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <b>設定の見える化（色×環境）</b>
+    <div class="small">Ver.3 は色ごとに閾値を分ける（塗料が多い問題の対策）。必要ならここを増やす。</div>
+    <table class="tbl" aria-label="thresholds">
+      <tr>
+        <td style="width:40%"><b>色</b> × <b>環境</b></td>
+        <td><b>OK上限</b>（grain）</td>
+        <td><b>NG下限</b>（grain）</td>
+      </tr>
+      <tr>
+        <td>グレー × 屋内</td><td><span class="mono" id="t_gi_ok"></span></td><td><span class="mono" id="t_gi_ng"></span></td>
+      </tr>
+      <tr>
+        <td>グレー × 屋外</td><td><span class="mono" id="t_go_ok"></span></td><td><span class="mono" id="t_go_ng"></span></td>
+      </tr>
+      <tr>
+        <td>その他（代表値）</td><td><span class="mono" id="t_ot_ok"></span></td><td><span class="mono" id="t_ot_ng"></span></td>
+      </tr>
+    </table>
+    <div class="note">
+      ※しきい値は「良品/不良」記憶で自動補正もする（ただし暴走防止で補正幅は制限）。<br/>
+      ここは後で工場長と合意取る “仕様表” になる。
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== DOM =====
+const view = document.getElementById('view');
+const ctx = view.getContext('2d', { willReadFrequently: true });
+
+const file = document.getElementById('file');
+const cam  = document.getElementById('cam');
+
+const btnPick  = document.getElementById('btnPick');
+const btnCam   = document.getElementById('btnCam');
+const btnReset = document.getElementById('btnReset');
+
+const envSel   = document.getElementById('envSel');
+const colorSel = document.getElementById('colorSel');
+
+const btnFullROI = document.getElementById('btnFullROI');
+const btnUseROI  = document.getElementById('btnUseROI');
+
+const roiRectEl = document.getElementById('roiRect');
+
+const grainVal = document.getElementById('grainVal');
+const covVal   = document.getElementById('covVal');
+const whyEl    = document.getElementById('why');
+
+const dotConf = document.getElementById('dotConf');
+const dotDist = document.getElementById('dotDist');
+const dotRes  = document.getElementById('dotRes');
+const confText = document.getElementById('confText');
+const distText = document.getElementById('distText');
+const resText  = document.getElementById('resText');
+
+const t_gi_ok = document.getElementById('t_gi_ok');
+const t_gi_ng = document.getElementById('t_gi_ng');
+const t_go_ok = document.getElementById('t_go_ok');
+const t_go_ng = document.getElementById('t_go_ng');
+const t_ot_ok = document.getElementById('t_ot_ok');
+const t_ot_ng = document.getElementById('t_ot_ng');
+
+const btnCalGood = document.getElementById('btnCalGood');
+const btnCalBad  = document.getElementById('btnCalBad');
+const btnCalClear= document.getElementById('btnCalClear');
+
+// ===== 状態 =====
+let img = new Image();
+let imgLoaded = false;
+
+let roi = { x:0, y:0, w:0, h:0, active:false };   // view座標
+let drag = { on:false, sx:0, sy:0, ex:0, ey:0 };
+
+let lastMetrics = null;
+
+// ===== しきい値プリセット（初期値）=====
+const BASE_THRESH = {
+  gray_indoor : { ok: 38, ng: 48 },
+  gray_outdoor: { ok: 40, ng: 52 },
+  white_indoor: { ok: 42, ng: 55 },
+  white_outdoor:{ ok: 45, ng: 58 },
+  black_indoor: { ok: 32, ng: 42 },
+  black_outdoor:{ ok: 34, ng: 46 },
+  red_indoor  : { ok: 40, ng: 54 },
+  red_outdoor : { ok: 42, ng: 56 },
+  blue_indoor : { ok: 38, ng: 52 },
+  blue_outdoor: { ok: 40, ng: 54 },
+  other_indoor: { ok: 40, ng: 54 },
+  other_outdoor:{ ok: 42, ng: 56 },
+};
+
+// ===== 端末内学習（軽量）=====
+const LS_KEY = 'paint_inspection_v3_calib';
+function loadCalib(){
+  try{ return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); }
+  catch(e){ return {}; }
+}
+function saveCalib(obj){ localStorage.setItem(LS_KEY, JSON.stringify(obj)); }
+function calibKey(){ return `${colorSel.value}_${envSel.value}`; }
+
+function applyCalib(base, calib){
+  const out = { ...base };
+  if(!calib) return out;
+
+  const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+
+  if(Number.isFinite(calib.goodMean) && calib.nGood>=2){
+    const targetOk = calib.goodMean + 3;
+    const delta = clamp(targetOk - out.ok, -6, 6);
+    out.ok = Math.round(out.ok + delta);
+  }
+  if(Number.isFinite(calib.badMean) && calib.nBad>=2){
+    const targetNg = calib.badMean - 3;
+    const delta = clamp(targetNg - out.ng, -6, 6);
+    out.ng = Math.round(out.ng + delta);
+  }
+  if(out.ng - out.ok < 6){ out.ng = out.ok + 6; }
+  return out;
+}
+
+// ===== UI =====
+function setDot(dotEl, kind){ dotEl.className = 'dot ' + kind; }
+function fmt1(x){ return (Math.round(x*10)/10).toFixed(1); }
+
+function updateThreshTable(){
+  const gi = applyCalib(BASE_THRESH.gray_indoor,  loadCalib()['gray_indoor']);
+  const go = applyCalib(BASE_THRESH.gray_outdoor, loadCalib()['gray_outdoor']);
+  const ot = applyCalib(BASE_THRESH.other_indoor, loadCalib()['other_indoor']);
+  t_gi_ok.textContent = gi.ok; t_gi_ng.textContent = gi.ng;
+  t_go_ok.textContent = go.ok; t_go_ng.textContent = go.ng;
+  t_ot_ok.textContent = ot.ok; t_ot_ng.textContent = ot.ng;
+}
+updateThreshTable();
+
+function getThreshold(){
+  const key = calibKey();
+  const base = BASE_THRESH[key] || BASE_THRESH['other_indoor'];
+  const calib = loadCalib()[key];
+  return applyCalib(base, calib);
+}
+
+// ===== 画像読み込み =====
+function fitCanvasToImage(image){
+  const maxW = 960;
+  const scale = Math.min(1, maxW / image.naturalWidth);
+  view.width  = Math.round(image.naturalWidth * scale);
+  view.height = Math.round(image.naturalHeight * scale);
+  ctx.drawImage(image, 0,0, view.width, view.height);
+
+  roi = { x:0, y:0, w:view.width, h:view.height, active:false };
+  drawROI();
+  analyzeAndRender();
+}
+
+function loadFileToImage(f){
+  if(!f) return;
+  const url = URL.createObjectURL(f);
+  img = new Image();
+  img.onload = ()=>{
+    URL.revokeObjectURL(url);
+    imgLoaded = true;
+    fitCanvasToImage(img);
+  };
+  img.src = url;
+}
+
+btnPick.onclick = ()=> file.click();
+btnCam.onclick  = ()=> cam.click();
+file.onchange = (e)=> loadFileToImage(e.target.files[0]);
+cam.onchange  = (e)=> loadFileToImage(e.target.files[0]);
+
+btnReset.onclick = ()=>{
+  imgLoaded=false;
+  ctx.clearRect(0,0,view.width,view.height);
+  roiRectEl.style.display='none';
+  grainVal.textContent='—';
+  covVal.textContent='—';
+  whyEl.textContent='画像を入れてください。';
+  confText.textContent='—'; distText.textContent='—'; resText.textContent='—';
+  setDot(dotConf,'ok'); setDot(dotDist,'ok'); setDot(dotRes,'ok');
+  btnCalGood.disabled = false;
+  btnCalBad.disabled  = false;
+};
+
+envSel.onchange = ()=> analyzeAndRender();
+colorSel.onchange = ()=> analyzeAndRender();
+
+// ===== ROI操作（ドラッグ）=====
+function canvasPos(ev){
+  const r = view.getBoundingClientRect();
+  const x = (ev.clientX - r.left) * (view.width / r.width);
+  const y = (ev.clientY - r.top)  * (view.height / r.height);
+  return { x, y };
+}
+
+function drawROI(){
+  if(!roi.active){
+    roiRectEl.style.display = 'none';
+    return;
+  }
+  roiRectEl.style.display = 'block';
+  const r = view.getBoundingClientRect();
+  const sx = roi.x / view.width  * r.width;
+  const sy = roi.y / view.height * r.height;
+  const sw = roi.w / view.width  * r.width;
+  const sh = roi.h / view.height * r.height;
+
+  roiRectEl.style.left = sx + 'px';
+  roiRectEl.style.top  = sy + 'px';
+  roiRectEl.style.width  = sw + 'px';
+  roiRectEl.style.height = sh + 'px';
+}
+
+function setROIFromDrag(){
+  const x1 = Math.min(drag.sx, drag.ex);
+  const y1 = Math.min(drag.sy, drag.ey);
+  const x2 = Math.max(drag.sx, drag.ex);
+  const y2 = Math.max(drag.sy, drag.ey);
+  const w = x2 - x1;
+  const h = y2 - y1;
+
+  const minSide = Math.min(view.width, view.height);
+  const minW = Math.max(180, Math.round(minSide * 0.18));
+  const minH = Math.max(140, Math.round(minSide * 0.14));
+  if(w < minW || h < minH){
+    roi.active = false;
+    drawROI();
+    return false;
+  }
+  roi = { x:x1, y:y1, w, h, active:true };
+  drawROI();
+  return true;
+}
+
+view.addEventListener('pointerdown', (ev)=>{
+  if(!imgLoaded) return;
+  drag.on = true;
+  const p = canvasPos(ev);
+  drag.sx = drag.ex = p.x;
+  drag.sy = drag.ey = p.y;
+  roi.active = true;
+  setROIFromDrag();
+});
+view.addEventListener('pointermove', (ev)=>{
+  if(!drag.on) return;
+  const p = canvasPos(ev);
+  drag.ex = p.x; drag.ey = p.y;
+  setROIFromDrag();
+});
+view.addEventListener('pointerup', ()=>{ drag.on = false; });
+view.addEventListener('pointercancel', ()=>{ drag.on = false; });
+
+btnFullROI.onclick = ()=>{
+  if(!imgLoaded) return;
+  roi = { x:0, y:0, w:view.width, h:view.height, active:false };
+  drawROI();
+  analyzeAndRender();
+};
+btnUseROI.onclick = ()=>{
+  if(!imgLoaded) return;
+  analyzeAndRender();
+};
+
+window.addEventListener('resize', drawROI);
+
+// ===== 解析コア =====
+function getROIImageData(){
+  const x = Math.max(0, Math.floor(roi.active ? roi.x : 0));
+  const y = Math.max(0, Math.floor(roi.active ? roi.y : 0));
+  const w = Math.min(view.width - x, Math.floor(roi.active ? roi.w : view.width));
+  const h = Math.min(view.height - y, Math.floor(roi.active ? roi.h : view.height));
+
+  const cov = (w*h) / (view.width*view.height);
+
+  const maxSide = 420;
+  const scale = Math.min(1, maxSide / Math.max(w, h));
+  const tw = Math.max(60, Math.floor(w * scale));
+  const th = Math.max(60, Math.floor(h * scale));
+
+  const tmp = document.createElement('canvas');
+  tmp.width = tw; tmp.height = th;
+  const tctx = tmp.getContext('2d', { willReadFrequently:true });
+
+  tctx.drawImage(view, x, y, w, h, 0, 0, tw, th);
+  const id = tctx.getImageData(0,0,tw,th);
+  return { id, cov, tw, th };
+}
+
+function qualityChecks(id){
+  const d = id.data;
+  const n = id.width*id.height;
+
+  let bright = 0, dark = 0;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i], g=d[i+1], b=d[i+2];
+    const y = 0.2126*r + 0.7152*g + 0.0722*b;
+    if(y > 245) bright++;
+    if(y < 20)  dark++;
+  }
+  const brightRate = bright / n;
+  const darkRate   = dark / n;
+
+  const glare = brightRate > 0.012;
+  const shadow = darkRate > 0.020;
+
+  return { glare, shadow, brightRate, darkRate };
+}
+
+// ピンボケ（簡易）チェック：ラプラシアン分散
+function blurCheck(gray, w, h){
+  let sum = 0, sum2 = 0, n = 0;
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i = y*w + x;
+      const lap = gray[i]*4 - gray[i-1] - gray[i+1] - gray[i-w] - gray[i+w];
+      sum += lap;
+      sum2 += lap*lap;
+      n++;
+    }
+  }
+  const mean = sum/n;
+  const varr = sum2/n - mean*mean;
+  return varr; // 大きいほどシャープ
+}
+
+// 撮影品質ゲート（暗い/白飛び/影/ボケ）
+function qualityGate(id){
+  const q = qualityChecks(id);
+
+  const w=id.width, h=id.height, d=id.data;
+  const gray = new Float32Array(w*h);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      const r=d[i], g=d[i+1], b=d[i+2];
+      gray[y*w+x] = 0.2126*r + 0.7152*g + 0.0722*b;
+    }
+  }
+  const blurVar = blurCheck(gray, w, h);
+
+  const tooDark   = q.darkRate   > 0.055;
+  const tooGlare  = q.brightRate > 0.030;
+  const tooShadow = q.darkRate   > 0.090;
+  const tooBlur   = blurVar < 120;
+
+  const reasons = [];
+  if(tooDark)   reasons.push(`暗い（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`);
+  if(tooGlare)  reasons.push(`反射強い（白飛び ${(q.brightRate*100).toFixed(1)}%）`);
+  if(tooShadow) reasons.push(`影が強い（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`);
+  if(tooBlur)   reasons.push(`ピンボケ気味（シャープ指数 ${Math.round(blurVar)})`);
+
+  const fail = (reasons.length >= 2) || (tooGlare);
+
+  return { fail, reasons, blurVar, ...q };
+}
+
+// 照明補正：局所平均との差分
+function illuminationNormalizeGray(id){
+  const w=id.width, h=id.height, d=id.data;
+  const g = new Float32Array(w*h);
+
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      const r=d[i], gg=d[i+1], b=d[i+2];
+      g[y*w+x] = (0.2126*r + 0.7152*gg + 0.0722*b);
+    }
+  }
+
+  const rad = 9;
+  const tmp = new Float32Array(w*h);
+  for(let y=0;y<h;y++){
+    let sum=0;
+    for(let x=0;x<w;x++){
+      const add = g[y*w + Math.min(w-1, x+rad)];
+      const sub = g[y*w + Math.max(0, x-rad-1)];
+      if(x===0){
+        sum=0;
+        for(let k=-rad;k<=rad;k++){
+          sum += g[y*w + Math.min(w-1, Math.max(0, k))];
+        }
+      }else{
+        sum += add - sub;
+      }
+      tmp[y*w+x] = sum / (rad*2+1);
+    }
+  }
+  const blur = new Float32Array(w*h);
+  for(let x=0;x<w;x++){
+    let sum=0;
+    for(let y=0;y<h;y++){
+      const add = tmp[Math.min(h-1, y+rad)*w + x];
+      const sub = tmp[Math.max(0, y-rad-1)*w + x];
+      if(y===0){
+        sum=0;
+        for(let k=-rad;k<=rad;k++){
+          sum += tmp[Math.min(h-1, Math.max(0, k))*w + x];
+        }
+      }else{
+        sum += add - sub;
+      }
+      blur[y*w+x] = sum / (rad*2+1);
+    }
+  }
+
+  const out = new Float32Array(w*h);
+  for(let i=0;i<w*h;i++){
+    out[i] = (g[i] - blur[i]) + 128;
+  }
+  return out;
+}
+
+function computeGrainScore(normGray, w, h){
+  let sum=0, sum2=0, n=0;
+
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=y*w+x;
+      const gx = (normGray[i+1]-normGray[i-1]) * 0.5;
+      const gy = (normGray[i+w]-normGray[i-w]) * 0.5;
+      const mag = Math.sqrt(gx*gx + gy*gy);
+      const m = Math.min(mag, 40);
+      sum += m;
+      sum2 += m*m;
+      n++;
+    }
+  }
+  const mean = sum/n;
+  const varr = sum2/n - mean*mean;
+  const grain = mean*1.6 + Math.sqrt(Math.max(0,varr))*0.9;
+  return grain;
+}
+
+function distanceHeuristic(tw, th, cov){
+  const minPix = 180*140;
+  const pix = tw*th;
+  const ok = (pix >= minPix) && (cov >= 0.18);
+  return { ok, pix };
+}
+
+function judge(grain, th){
+  if(grain <= th.ok) return 'OK';
+  if(grain >= th.ng) return 'NG';
+  return '注意';
+}
+
+function analyzeAndRender(){
+  if(!imgLoaded) return;
+
+  ctx.drawImage(img, 0,0, view.width, view.height);
+
+  const { id, cov, tw, th } = getROIImageData();
+  const gate = qualityGate(id);
+
+  const norm = illuminationNormalizeGray(id);
+  const gscore = computeGrainScore(norm, id.width, id.height);
+
+  const thres = getThreshold();
+  const res = judge(gscore, thres);
+
+  let finalRes = res;
+  if(gate.fail){
+    finalRes = '再撮影';
+  }
+
+  const dist = distanceHeuristic(tw, th, cov);
+
+  // 信頼度（反射・影・距離）
+  let conf = '高';
+  let confDot = 'ok';
+  const confReasons = [];
+
+  if(gate.glare){
+    conf = '中'; confDot = 'warn';
+    confReasons.push(`反射多め（白飛び ${(gate.brightRate*100).toFixed(1)}%）`);
+  }
+  if(gate.shadow){
+    conf = (conf==='高' ? '中' : conf);
+    confDot = (confDot==='ok' ? 'warn' : confDot);
+    confReasons.push(`影多め（黒つぶれ ${(gate.darkRate*100).toFixed(1)}%）`);
+  }
+  if(!dist.ok){
+    conf = '中'; confDot = 'warn';
+    confReasons.push('距離/ROIが小さめ（詳細は不安定）');
+  }
+  if(gate.fail){
+    conf = '低'; confDot = 'warn';
+  }
+
+  grainVal.textContent = fmt1(gscore);
+  covVal.textContent = (cov*100).toFixed(1) + '%';
+
+  confText.textContent = conf;
+  setDot(dotConf, confDot);
+
+  distText.textContent = dist.ok ? 'OK' : 'NG';
+  setDot(dotDist, dist.ok ? 'ok' : 'warn');
+
+  resText.textContent = finalRes;
+  setDot(dotRes, finalRes==='OK' ? 'ok' : (finalRes==='NG' ? 'ng' : 'warn'));
+
+  const lines = [];
+  lines.push(`判定：${finalRes}（しきい値 OK≦${thres.ok} / NG≧${thres.ng}）`);
+  lines.push(roi.active ? 'ROI：指定あり（塗装面のみを切ると安定）' : 'ROI：全体（エッジや影が入るとブレる）');
+
+  if(confReasons.length){
+    lines.push('注意：' + confReasons.join(' / '));
+  }else{
+    lines.push('注意：なし');
+  }
+
+  if(gate.fail){
+    lines.push('再撮影理由：' + gate.reasons.join(' / '));
+  }
+
+  lines.push(`環境：${envSel.value==='indoor'?'屋内':'屋外'} / 色：${colorSel.options[colorSel.selectedIndex].text}`);
+  whyEl.textContent = lines.join('\n');
+
+  lastMetrics = { grain:gscore, cov, tw, th, thres, res: finalRes };
+
+  const canLearn = !gate.fail;
+  btnCalGood.disabled = !canLearn;
+  btnCalBad.disabled  = !canLearn;
+
+  updateThreshTable();
+}
+
+// ===== 学習ボタン =====
+function updateCalib(kind){
+  if(!lastMetrics) return;
+  if(lastMetrics.res === '再撮影') return; // 念のため
+
+  const key = calibKey();
+  const db = loadCalib();
+  const cur = db[key] || { goodMean:null, badMean:null, nGood:0, nBad:0 };
+
+  const x = lastMetrics.grain;
+
+  function ema(prev, val, n){
+    const a = Math.min(0.35, 2/(n+3));
+    return (prev==null) ? val : (prev*(1-a) + val*a);
+  }
+
+  if(kind==='good'){
+    cur.nGood += 1;
+    cur.goodMean = ema(cur.goodMean, x, cur.nGood);
+  }else{
+    cur.nBad += 1;
+    cur.badMean = ema(cur.badMean, x, cur.nBad);
+  }
+  db[key] = cur;
+  saveCalib(db);
+  analyzeAndRender();
+}
+
+btnCalGood.onclick = ()=> updateCalib('good');
+btnCalBad.onclick  = ()=> updateCalib('bad');
+btnCalClear.onclick = ()=>{
+  localStorage.removeItem(LS_KEY);
+  updateThreshTable();
+  analyzeAndRender();
+};
+</script>
+</body>
+</html>

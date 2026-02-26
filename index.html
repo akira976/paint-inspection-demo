@@ -533,7 +533,55 @@ function qualityChecks(id){
 
   return { glare, shadow, brightRate, darkRate };
 }
+// 2.5) ピンボケ（簡易）チェック：ラプラシアン分散
+function blurCheck(gray, w, h){
+  let sum = 0, sum2 = 0, n = 0;
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i = y*w + x;
+      const lap = gray[i]*4 - gray[i-1] - gray[i+1] - gray[i-w] - gray[i+w];
+      sum += lap;
+      sum2 += lap*lap;
+      n++;
+    }
+  }
+  const mean = sum/n;
+  const varr = sum2/n - mean*mean;
+  return varr;
+}
 
+// 2.6) 撮影品質ゲート
+function qualityGate(id){
+  const gate = qualityGate(id);
+
+  const w=id.width, h=id.height, d=id.data;
+  const gray = new Float32Array(w*h);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      const r=d[i], g=d[i+1], b=d[i+2];
+      gray[y*w+x] = 0.2126*r + 0.7152*g + 0.0722*b;
+    }
+  }
+
+  const blurVar = blurCheck(gray, w, h);
+
+  const tooDark   = q.darkRate   > 0.055;
+  const tooGlare  = q.brightRate > 0.030;
+  const tooShadow = q.darkRate   > 0.090;
+  const tooBlur   = blurVar < 120;
+
+  const reasons = [];
+  if(tooDark)   reasons.push("暗い");
+  if(tooGlare)  reasons.push("反射強い");
+  if(tooShadow) reasons.push("影が強い");
+  if(tooBlur)   reasons.push("ピンボケ気味");
+
+  const fail = (reasons.length >= 2) || (tooGlare);
+
+  return { fail, reasons, ...q };
+}
+  
 // 3) ざっくり照明補正：局所平均との差分（陰影を弱める）
 function illuminationNormalizeGray(id){
   const w=id.width, h=id.height, d=id.data;
@@ -654,15 +702,18 @@ function analyzeAndRender(){
 
   const thres = getThreshold();
   const res = judge(gscore, thres);
-
+　let finalRes = res;
+　if(gate.fail){
+ 　 finalRes = '再撮影';
+　}
   const dist = distanceHeuristic(tw, thh, cov);
 
   // 信頼度（反射・影・距離）
   let conf = '高';
   let confDot = 'ok';
   let confReasons = [];
-  if(q.glare){ conf = '中'; confDot='warn'; confReasons.push(`反射多め（白飛び ${(q.brightRate*100).toFixed(1)}%）`); }
-  if(q.shadow){ conf = (conf==='高'?'中':conf); confDot = (confDot==='ok'?'warn':confDot); confReasons.push(`影多め（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`); }
+  if(gate.glare){ conf = '中'; confDot='warn'; confReasons.push(`反射多め（白飛び ${(q.brightRate*100).toFixed(1)}%）`); }
+  if(gate.shadow){ conf = (conf==='高'?'中':conf); confDot = (confDot==='ok'?'warn':confDot); confReasons.push(`影多め（黒つぶれ ${(q.darkRate*100).toFixed(1)}%）`); }
   if(!dist.ok){
     conf = '中';
     confDot='warn';
@@ -679,10 +730,10 @@ function analyzeAndRender(){
   distText.textContent = dist.ok ? 'OK' : 'NG';
   setDot(dotDist, dist.ok ? 'ok' : 'warn');
 
-  resText.textContent = res;
+  resText.textContent = finalRes;
   setDot(dotRes,
-  (res==='OK' && dist.ok) ? 'ok'
-  : (res==='NG' || !dist.ok) ? 'ng'
+  (finalRes==='OK' && dist.ok) ? 'ok'
+  : (finalRes==='NG' || !dist.ok) ? 'ng'
   : 'warn'
 );
 
@@ -702,8 +753,13 @@ function analyzeAndRender(){
   lines.push(`環境：${envSel.value==='indoor'?'屋内':'屋外'} / 色：${colorSel.options[colorSel.selectedIndex].text}`);
   whyEl.textContent = lines.join('\n');
 
-  lastMetrics = { grain:gscore, cov, tw, th:thh, q, thres, res };
-  updateThreshTable();
+  lastMetrics = { grain:gscore, cov, tw, th:thh, thres, res: finalRes };
+
+const canLearn = !gate.fail;
+btnCalGood.disabled = !canLearn;
+btnCalBad.disabled  = !canLearn;
+
+updateThreshTable();
 }
 
 // ===== 学習ボタン =====
@@ -746,3 +802,4 @@ btnCalClear.onclick = ()=>{
 </body>
 
 </html>
+
